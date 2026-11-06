@@ -1,17 +1,30 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAccount } from 'wagmi'
 import { isAddress, type Address } from 'viem'
 import { Search } from 'lucide-react'
 import { fetchAddressReport } from '@/lib/address'
-import { buildAddressExplorerUrl, requireChain } from '@/onchain-facts'
+import { useRecent } from '@/lib/history'
+import { buildAddressExplorerUrl, getUsdc, requireChain } from '@/onchain-facts'
 import { Card, EmptyHint, ErrorBox, ExplorerLink, GhostButton, Label, Pill, PrimaryButton, Row, SectionTitle, TextInput } from './ui'
+import { RecentList } from './RecentList'
 
-export function AddressPanel({ chainId }: { chainId: number }) {
+interface Props {
+  chainId: number
+  initialQuery: string
+  onSearched: (address: string) => void
+  onRecall: (chainId: number, address: string) => void
+}
+
+export function AddressPanel({ chainId, initialQuery, onSearched, onRecall }: Props) {
   const { address: connected } = useAccount()
-  const [draft, setDraft] = useState('')
-  const [submitted, setSubmitted] = useState<{ chainId: number; address: Address } | null>(null)
+  const usdc = getUsdc(chainId)
+  const [draft, setDraft] = useState(initialQuery)
+  const [submitted, setSubmitted] = useState<{ chainId: number; address: Address } | null>(
+    isAddress(initialQuery) ? { chainId, address: initialQuery } : null,
+  )
   const [formError, setFormError] = useState<string | null>(null)
+  const recent = useRecent('address')
 
   const q = useQuery({
     queryKey: ['address', submitted?.chainId, submitted?.address],
@@ -20,12 +33,25 @@ export function AddressPanel({ chainId }: { chainId: number }) {
     retry: false,
   })
 
+  const foundAddress = q.data ? q.data.address : null
+  const foundChain = q.data ? q.data.chainId : null
+  const addRecent = recent.add
+  useEffect(() => {
+    if (foundAddress && foundChain !== null) addRecent({ chainId: foundChain, value: foundAddress })
+  }, [foundAddress, foundChain, addRecent])
+
+  const search = (address: Address) => {
+    setFormError(null)
+    setDraft(address)
+    setSubmitted({ chainId, address })
+    onSearched(address)
+  }
+
   const onSubmit = (e: FormEvent) => {
     e.preventDefault()
     const a = draft.trim()
     if (!isAddress(a)) return setFormError('Enter a valid 0x address.')
-    setFormError(null)
-    setSubmitted({ chainId, address: a })
+    search(a)
   }
 
   const r = q.data
@@ -36,7 +62,18 @@ export function AddressPanel({ chainId }: { chainId: number }) {
           <div>
             <div className="mb-1.5 flex items-center justify-between">
               <Label htmlFor="addr">Address</Label>
-              {connected && <GhostButton type="button" onClick={() => setDraft(connected)}>Use connected wallet</GhostButton>}
+              <div className="flex gap-2">
+                {connected && (
+                  <GhostButton type="button" onClick={() => setDraft(connected)}>
+                    Use connected wallet
+                  </GhostButton>
+                )}
+                {usdc && (
+                  <GhostButton type="button" onClick={() => setDraft(usdc.address)}>
+                    Use USDC contract
+                  </GhostButton>
+                )}
+              </div>
             </div>
             <TextInput id="addr" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="0x..." aria-invalid={!!formError} />
             {formError && <p className="mt-2 text-xs text-danger">{formError}</p>}
@@ -45,6 +82,7 @@ export function AddressPanel({ chainId }: { chainId: number }) {
             <Search size={16} aria-hidden />
             Inspect on {requireChain(chainId).name}
           </PrimaryButton>
+          <RecentList items={recent.items} onPick={(item) => onRecall(item.chainId, item.value)} onClear={recent.clear} />
         </form>
       </Card>
 

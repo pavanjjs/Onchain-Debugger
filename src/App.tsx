@@ -1,12 +1,14 @@
-import { useState } from 'react'
-import { Bug, FileSearch, Terminal, Wallet } from 'lucide-react'
-import { DEFAULT_CHAIN_ID, SORTED_CHAINS } from '@/lib/clients'
+import { useEffect, useState } from 'react'
+import { Bug, FileSearch, Link2, Terminal, Wallet } from 'lucide-react'
+import { toast } from 'sonner'
+import { SORTED_CHAINS } from '@/lib/clients'
+import { readUrlState, toSearch, writeUrlState, type Tab } from '@/lib/urlState'
+import { buildShareLink } from '@/lib/share'
 import { requireChain } from '@/onchain-facts'
 import { TxPanel } from '@/components/TxPanel'
 import { CallPanel } from '@/components/CallPanel'
 import { AddressPanel } from '@/components/AddressPanel'
-
-type Tab = 'tx' | 'call' | 'address'
+import { GhostButton } from '@/components/ui'
 
 const TABS: { id: Tab; label: string; icon: typeof Bug }[] = [
   { id: 'tx', label: 'Transaction', icon: Bug },
@@ -15,9 +17,39 @@ const TABS: { id: Tab; label: string; icon: typeof Bug }[] = [
 ]
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('tx')
-  const [chainId, setChainId] = useState(DEFAULT_CHAIN_ID)
+  const initial = readUrlState()
+  const [tab, setTab] = useState<Tab>(initial.tab)
+  const [chainId, setChainId] = useState(initial.chainId)
+  // The value to auto-run when a panel mounts (from a shared link, recent list, or cross-tool jump).
+  const [seed, setSeed] = useState(initial.id)
+  // Bumping this remounts the active panel so it picks up a new seed.
+  const [nonce, setNonce] = useState(0)
+  const [resolved, setResolved] = useState<{ search: string; link: string } | null>(null)
   const chain = requireChain(chainId)
+
+  const urlState = { tab, chainId, id: tab === 'call' ? '' : seed }
+  const search = toSearch(urlState)
+  // Only offer the link once the share base has resolved for the current result.
+  const shareLink = urlState.id && resolved?.search === search ? resolved.link : null
+
+  useEffect(() => {
+    writeUrlState({ tab, chainId, id: tab === 'call' ? '' : seed })
+    if (!seed || tab === 'call') return
+    // Results are keyed by their search string, so a late response for an old result is never shown.
+    void buildShareLink(`/?${search}`).then((link) => setResolved({ search, link }))
+  }, [tab, chainId, seed, search])
+
+  const jump = (nextTab: Tab, nextChain: number, value: string) => {
+    setTab(nextTab)
+    setChainId(nextChain)
+    setSeed(value)
+    setNonce((n) => n + 1)
+  }
+
+  const copyLink = () => {
+    if (!shareLink) return
+    void navigator.clipboard.writeText(shareLink).then(() => toast.success('Link copied'))
+  }
 
   return (
     <div className="min-h-dvh px-4 pb-24 pt-8 sm:pt-12">
@@ -39,7 +71,7 @@ export default function App() {
               <button
                 key={id}
                 type="button"
-                onClick={() => setTab(id)}
+                onClick={() => jump(id, chainId, '')}
                 aria-current={tab === id ? 'page' : undefined}
                 className={`inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl px-4 text-sm font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent sm:flex-none ${
                   tab === id ? 'bg-surface-strong text-ink' : 'text-subtle hover:text-ink'
@@ -58,7 +90,10 @@ export default function App() {
             <select
               id="network"
               value={chainId}
-              onChange={(e) => setChainId(Number(e.target.value))}
+              onChange={(e) => {
+                setChainId(Number(e.target.value))
+                setSeed('')
+              }}
               className="min-h-11 w-full rounded-2xl border border-line bg-surface px-4 text-sm text-ink outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/25"
             >
               <optgroup label="Testnets">
@@ -79,13 +114,38 @@ export default function App() {
           </div>
         </div>
 
-        <p className="mb-5 text-xs tabular-nums text-subtle">
-          Chain {chain.chainId} · gas token {chain.nativeCurrency.symbol} · reads from the public RPC
-        </p>
+        <div className="mb-5 flex items-center justify-between gap-3">
+          <p className="text-xs tabular-nums text-subtle">
+            Chain {chain.chainId} · gas token {chain.nativeCurrency.symbol} · public RPC
+          </p>
+          {shareLink && (
+            <GhostButton type="button" onClick={copyLink}>
+              <Link2 size={14} aria-hidden />
+              Copy link to this result
+            </GhostButton>
+          )}
+        </div>
 
-        {tab === 'tx' && <TxPanel chainId={chainId} />}
+        {tab === 'tx' && (
+          <TxPanel
+            key={`tx-${nonce}`}
+            chainId={chainId}
+            initialQuery={seed}
+            onSearched={setSeed}
+            onRecall={(c, v) => jump('tx', c, v)}
+            onInspect={(address) => jump('address', chainId, address)}
+          />
+        )}
         {tab === 'call' && <CallPanel chainId={chainId} />}
-        {tab === 'address' && <AddressPanel chainId={chainId} />}
+        {tab === 'address' && (
+          <AddressPanel
+            key={`address-${nonce}`}
+            chainId={chainId}
+            initialQuery={seed}
+            onSearched={setSeed}
+            onRecall={(c, v) => jump('address', c, v)}
+          />
+        )}
       </div>
     </div>
   )

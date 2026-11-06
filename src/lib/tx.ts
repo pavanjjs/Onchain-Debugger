@@ -259,3 +259,39 @@ export async function traceTx(chainId: number, hash: Hex): Promise<TraceResult> 
     return { supported: false, reason: errorMessage(e) }
   }
 }
+
+/** Finds a real recent transaction by scanning back from the chain head. */
+export async function findRecentTxHash(chainId: number): Promise<Hex> {
+  const client = getClient(chainId)
+  const head = await client.getBlockNumber()
+  for (let i = 0n; i < 25n && head - i >= 0n; i++) {
+    const block = await client.getBlock({ blockNumber: head - i })
+    const first = block.transactions[0]
+    if (first) return first
+  }
+  throw new Error('No transactions found in the last 25 blocks of this network.')
+}
+
+/** Plain-text summary suitable for pasting into an issue or chat. */
+export function buildReportText(report: TxReport, revertMessage?: string): string {
+  const chain = requireChain(report.chainId)
+  const { tx, receipt } = report
+  const lines = [
+    `Transaction ${report.hash}`,
+    `Network: ${chain.name} (${chain.chainId})`,
+    `Status: ${report.status}`,
+    `From: ${tx.from}`,
+    `To: ${tx.to ?? `(creates ${receipt?.contractAddress ?? 'contract'})`}`,
+    `Value: ${report.value} ${chain.nativeCurrency.symbol}`,
+  ]
+  if (receipt) {
+    lines.push(`Block: ${receipt.blockNumber.toString()}`)
+    lines.push(`Gas used / limit: ${receipt.gasUsed.toString()} / ${tx.gas.toString()}`)
+  }
+  if (report.fee !== null) lines.push(`Fee: ${report.fee} ${chain.nativeCurrency.symbol}`)
+  if (report.input) lines.push(`Call: ${report.input.functionName}(${report.input.args.map((a) => a.value).join(', ')})`)
+  else if (tx.input.length >= 10) lines.push(`Selector: ${tx.input.slice(0, 10)}`)
+  if (revertMessage) lines.push(`Revert reason: ${revertMessage}`)
+  for (const f of report.findings) lines.push(`- ${f.title}: ${f.detail}`)
+  return lines.join('\n')
+}
